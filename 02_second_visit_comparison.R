@@ -23,7 +23,6 @@ jdbcConnection <- dbConnect(jdbcDriver,
 sql <- 'SELECT VISITINSTANCECODE, 
                       VISITTYPE,
                       ACCOUNT,
-                      PLANNEDSTART, 
                       EXECUTIONSTART,
                       EXECUTIONEND,
                       STATUS, 
@@ -54,14 +53,12 @@ rm(jdbcConnection, jdbcDriver)
 
 SpringVisit <- SpringVisit %>% 
   rename(Customer = ACCOUNT) %>%
+  mutate(date = date(EXECUTIONSTART)) %>% 
   filter(VISITTYPE == "ZR" |
            VISITTYPE == "MERCH") %>% 
-  mutate(Actual.Time..Minutes. = ((ymd_hms(EXECUTIONEND) - ymd_hms(EXECUTIONSTART)) / 60)) %>% 
-  select(-c(PLANNEDSTART, EXECUTIONSTART, EXECUTIONEND, STATUS, SOURCE))
-
-SpringVisit$VISITINSTANCECODE <- str_sub(SpringVisit$VISITINSTANCECODE, -1)
-
-SpringVisit <- SpringVisit %>% 
+  mutate(Actual.Time..Minutes. = ((ymd_hms(EXECUTIONEND) - ymd_hms(EXECUTIONSTART)) / 60),
+         VISITINSTANCECODE = str_sub(VISITINSTANCECODE, -1)) %>% 
+  select(-c(EXECUTIONEND, STATUS, SOURCE)) %>% 
   filter(VISITINSTANCECODE != "b",
          VISITINSTANCECODE != "G",
          VISITINSTANCECODE != "j",
@@ -85,19 +82,16 @@ SpringVisit <- SpringVisit %>%
                                     "6" = "ZR",
                                     "7" = "ZR",
                                     "8" = "ZR",
-                                    "9" = "ZR"))
+                                    "9" = "ZR"),
+         Customer = as.numeric(Customer))
 
 levels(as.factor(SpringVisit$VISITINSTANCECODE))
-
-# SpringVisit$Customer <- as.character(SpringVisit$Customer)
-SpringVisit$Customer <- as.numeric(SpringVisit$Customer)
 
 MMdata <- read.csv("data/MMdataR.csv", stringsAsFactors = FALSE)
 
 MMdata <- MMdata %>% 
-  select(Customer, Location, KeyAccount, SubChannel)
-
-MMdata$Customer <- as.numeric(MMdata$Customer)
+  select(Customer, Location, KeyAccount, SubChannel) %>% 
+  mutate(Customer = as.numeric(Customer))
 
 SpringVisit <- SpringVisit %>% 
   left_join(MMdata, "Customer")
@@ -110,21 +104,25 @@ cust.info <- SpringVisit %>%
   unique()
 
 total.times <- SpringVisit %>% group_by(Customer, VISITINSTANCECODE) %>% 
-  summarise(total = sum(Actual.Time..Minutes.))
+  summarise(total = sum(Actual.Time..Minutes.)) %>% 
+  ungroup()
 
 total.times <- total.times %>% 
-  pivot_wider(names_from = VISITINSTANCECODE, values_from = total)
-
-
-total.times$M  <- total.times$M %>%  replace_na(0)
-total.times$X  <- total.times$X %>%  replace_na(0)
-total.times$ZR <- total.times$ZR %>%  replace_na(0)
+  pivot_wider(names_from = VISITINSTANCECODE, values_from = total) %>% 
+  mutate(
+    M = replace_na(M, 0),
+    X = replace_na(X, 0),
+    ZR = replace_na(ZR, 0))
 
 total.times <- total.times %>% 
   mutate(total = M + X + ZR,
-         M.perc = as.numeric(M) / as.numeric(total) * 100,
-         X.perc = as.numeric(X) / as.numeric(total) * 100,
-         ZR.perc = as.numeric(ZR) / as.numeric(total) * 100,
+         M = as.numeric(M),
+         X = as.numeric(X),
+         ZR = as.numeric(ZR),
+         total = as.numeric(total),
+         M.perc = M / total * 100,
+         X.perc = X / total * 100,
+         ZR.perc = ZR / total * 100,
          M = M / 60,
          X = X / 60,
          ZR = ZR / 60) %>% 
@@ -132,4 +130,29 @@ total.times <- total.times %>%
 
 colnames(total.times) <- c("Customer", "First Visit No Order Total Hours", "Second Visit Total Hours", "Sales Visit", "Total Hours", "FVNO Percentage", "Second Visit Percentage", "Sales Percentage", "ACCOUNT_NAME", "Location", "KeyAccount", "SubChannel")
 
-write.csv(total.times, "outputs/time_percent.csv", row.names = FALSE)
+# write.csv(total.times, "outputs/time_percent.csv", row.names = FALSE)
+
+
+# get outlets that had second hit
+
+two.hit.filter <- SpringVisit %>% 
+  filter(VISITINSTANCECODE == "X") %>% 
+  select(Customer, date)
+
+two.hit <- SpringVisit %>% 
+  semi_join(two.hit.filter, by = c("Customer", "date")) %>% 
+  mutate(VISITINSTANCECODE = recode(VISITINSTANCECODE,
+                                    "ZR" = "M"))
+
+library(data.table)
+
+two.hit <- two.hit %>% 
+  group_by(Customer, date, VISITINSTANCECODE) %>% 
+  summarise(daily = sum(Actual.Time..Minutes.)) %>% 
+  left_join(cust.info, by = "Customer") %>% 
+  pivot_wider(names_from = VISITINSTANCECODE, values_from = daily) %>% 
+  arrange(Customer, date) %>%
+  rename(First = M,
+         Second = X)
+
+write.csv(two.hit, "outputs/two_hits.csv", row.names = FALSE)
